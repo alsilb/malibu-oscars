@@ -31,8 +31,8 @@ const ADMIN_PASSWORD = "oscars2026";
 // ── JSONBin config ─────────────────────────────────────────────────────────
 // Users must paste their JSONBin Master Key and Bin ID here after setup
 // Instructions shown in the UI if not configured
-const JSONBIN_MASTER_KEY = window.JSONBIN_MASTER_KEY || "";
-const JSONBIN_BIN_ID     = window.JSONBIN_BIN_ID     || "";
+const JSONBIN_MASTER_KEY = "$2a$10$XXK9khC.cfKUGHgNjblmNeoGyUR.y95zeuS6m1kQ9j0B8OVRXZFnu";
+const JSONBIN_BIN_ID     = "69b5c5cbc3097a1dd5260ae5";
 const JSONBIN_BASE       = "https://api.jsonbin.io/v3/b";
 
 const CATEGORIES = [
@@ -188,7 +188,7 @@ function SetupScreen({ onSave }) {
 
 // ── Main App ─────────────────────────────────────────────────────────────────
 function App() {
-  const [configured, setConfigured] = useState(false);
+  const [configured, setConfigured] = useState(true);
   const [masterKey, setMasterKey] = useState("");
   const [binId, setBinId] = useState("");
 
@@ -210,16 +210,10 @@ function App() {
   const oscarClicks = useRef(0);
   const oscarTimer  = useRef(null);
 
-  // Load config from localStorage
+  // Credentials hardcoded - set globals on mount
   useEffect(() => {
-    const k = localStorage.getItem("malibu_key");
-    const b = localStorage.getItem("malibu_bin");
-    if (k && b) {
-      setMasterKey(k); setBinId(b); setConfigured(true);
-      // set globals so helpers can use them
-      window.JSONBIN_MASTER_KEY = k;
-      window.JSONBIN_BIN_ID = b;
-    }
+    window.JSONBIN_MASTER_KEY = JSONBIN_MASTER_KEY;
+    window.JSONBIN_BIN_ID = JSONBIN_BIN_ID;
   }, []);
 
   const saveConfig = (k, b) => {
