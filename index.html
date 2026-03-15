@@ -367,44 +367,103 @@ function App() {
   const fetchLiveWinners = useCallback(async () => {
     setFetchStatus("fetching");
     try {
-      const prompt = `It is Oscar night March 15 2026, the 98th Academy Awards. Search the web RIGHT NOW for the latest announced winners.
-Return ONLY a valid JSON object. Keys are category IDs, values are the EXACT nominee string from the list (or null if not yet announced).
-${CATEGORIES.map(c=>`"${c.id}": [${c.nominees.map(n=>'"'+n+'"').join(",")}]`).join("\n")}
-Return ONLY the JSON. No markdown. No explanation.`;
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:1000,
-          tools:[{type:"web_search_20250305",name:"web_search"}],
-          messages:[{role:"user",content:prompt}]
-        })
-      });
+      // Use Wikipedia API — free, no key needed, CORS-friendly
+      // Fetch 98th Academy Awards Wikipedia page
+      const WIKI_URL = "https://en.wikipedia.org/w/api.php?action=query&titles=98th_Academy_Awards&prop=revisions&rvprop=content&format=json&origin=*";
+      const res = await fetch(WIKI_URL);
       const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
-      const textBlock = data.content && data.content.find(b=>b.type==="text");
-      if (!textBlock) throw new Error("no text");
-      const jsonMatch = textBlock.text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("no json");
-      const parsed = JSON.parse(jsonMatch[0]);
+      const pages = data.query.pages;
+      const page = pages[Object.keys(pages)[0]];
+      const wikiText = page.revisions?.[0]?.["*"] || "";
 
-      // Merge into DB
-      const fresh = await readDB() || emptyDB();
+      if (!wikiText) throw new Error("No wiki content");
+
+      // Map our category IDs to search patterns in wiki markup
+      const WIKI_PATTERNS = {
+        picture:            /Best Picture[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        director:           /Best Director(?:ing)?[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        actor:              /Best Actor[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        actress:            /Best Actress[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        supporting_actor:   /Best Supporting Actor[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        supporting_actress: /Best Supporting Actress[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        adapted_screenplay: /Best Adapted Screenplay[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        original_screenplay:/Best Original Screenplay[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        animated_feature:   /Best Animated Feature[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        score:              /Best Original Score[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        original_song:      /Best Original Song[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        cinematography:     /Best Cinematograph[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        film_editing:       /Best Film Editing[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        costume:            /Best Costume[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        production_design:  /Best Production Design[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        makeup:             /Best Makeup[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        sound:              /Best Sound[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        visual_effects:     /Best Visual Effects[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        international:      /Best International[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        documentary:        /Best Documentary Feature[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        documentary_short:  /Best Documentary Short[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        animated_short:     /Best Animated Short[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        live_action_short:  /Best Live Action Short[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+        casting:            /Best Casting[^|]*\|[^|]*\|\s*([^
+|{}]+)/i,
+      };
+
+      // Also try a simpler approach: scrape AP/Google via allorigins proxy
       let newCount = 0;
+      const fresh = await readDB() || emptyDB();
+
+      // Try to match wiki winners against our nominee list
       CATEGORIES.forEach(cat => {
-        const val = parsed[cat.id];
-        if (val && val !== "null") {
-          if (fresh.winners[cat.id] !== val) newCount++;
-          fresh.winners[cat.id] = val;
+        const pattern = WIKI_PATTERNS[cat.id];
+        if (!pattern) return;
+        const match = wikiText.match(pattern);
+        if (!match) return;
+        const rawWinner = match[1].replace(/[[\]{}|]/g,"").replace(/'{2,}/g,"").trim();
+        if (!rawWinner || rawWinner.length < 2) return;
+        // Find closest matching nominee
+        const winner = cat.nominees.find(n => {
+          const nLower = n.toLowerCase();
+          const wLower = rawWinner.toLowerCase();
+          return nLower.includes(wLower) || wLower.includes(nLower) ||
+                 n.split(" — ")[0].toLowerCase().includes(wLower) ||
+                 wLower.includes(n.split(" — ")[0].toLowerCase());
+        });
+        if (winner && fresh.winners[cat.id] !== winner) {
+          fresh.winners[cat.id] = winner;
+          newCount++;
         }
       });
+
       await writeDB(fresh);
       setDb(fresh);
       setLastSync(new Date());
       setFetchStatus("done");
       if (newCount > 0) showNotif(`🏆 ${newCount} new winner${newCount>1?"s":""} updated!`);
+      else showNotif("✓ Checked — no new winners yet");
     } catch(e) {
-      console.error(e);
+      console.error("Live fetch error:", e);
       setFetchStatus("error");
       setTimeout(()=>setFetchStatus("idle"), 5000);
     }
