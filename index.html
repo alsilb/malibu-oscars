@@ -367,84 +367,65 @@ function App() {
   const fetchLiveWinners = useCallback(async () => {
     setFetchStatus("fetching");
     try {
-      // Pull 98th Academy Awards page from Wikipedia - free, no API key, CORS-safe
-      const url = "https://en.wikipedia.org/w/api.php?action=query&titles=98th_Academy_Awards&prop=revisions&rvprop=content&format=json&origin=*";
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("Wikipedia fetch failed: " + res.status);
-      const data = await res.json();
-      const pages = data.query.pages;
-      const page = pages[Object.keys(pages)[0]];
-      const wikiText = (page.revisions && page.revisions[0] && page.revisions[0]["*"]) || "";
-      if (!wikiText) throw new Error("No wiki content returned");
+      // Try multiple sources via allorigins proxy (bypasses CORS)
+      const SOURCES = [
+        "https://api.allorigins.win/get?url=" + encodeURIComponent("https://www.google.com/search?q=98th+academy+awards+2026+winners+tonight"),
+        "https://api.allorigins.win/get?url=" + encodeURIComponent("https://apnews.com/hub/academy-awards"),
+        "https://api.allorigins.win/get?url=" + encodeURIComponent("https://deadline.com/tag/oscars-2026/"),
+      ];
+
+      let pageText = "";
+      for (let i = 0; i < SOURCES.length; i++) {
+        try {
+          const r = await fetch(SOURCES[i]);
+          const d = await r.json();
+          if (d.contents && d.contents.length > 500) {
+            pageText = d.contents;
+            break;
+          }
+        } catch(e) { continue; }
+      }
+
+      if (!pageText) throw new Error("All sources failed");
+
+      // Strip HTML tags for easier text matching
+      const text = pageText.replace(/<[^>]+>/g, " ").replace(/&amp;/g,"&").replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&nbsp;/g," ");
 
       const fresh = await readDB() || emptyDB();
       let newCount = 0;
 
-      // For each category, search for its winner in the wiki text
-      // Wikipedia marks winners with bold (triple apostrophe) in award tables
-      const searchWiki = (terms) => {
-        for (let i = 0; i < terms.length; i++) {
-          const term = terms[i];
-          const idx = wikiText.toLowerCase().indexOf(term.toLowerCase());
-          if (idx === -1) continue;
-          // Grab surrounding 300 chars and look for bold text (the winner)
-          const chunk = wikiText.substring(Math.max(0, idx - 50), idx + 300);
-          const boldMatch = chunk.match(/'{3}([^']+)'{3}/);
-          if (boldMatch) return boldMatch[1].trim();
-        }
-        return null;
-      };
-
-      const SEARCH_TERMS = {
-        picture:             ["Best Picture", "Best Film"],
-        director:            ["Best Director", "Best Directing"],
-        actor:               ["Best Actor in a Leading"],
-        actress:             ["Best Actress in a Leading"],
-        supporting_actor:    ["Best Actor in a Supporting"],
-        supporting_actress:  ["Best Actress in a Supporting"],
-        adapted_screenplay:  ["Adapted Screenplay"],
-        original_screenplay: ["Original Screenplay"],
-        animated_feature:    ["Animated Feature Film"],
-        animated_short:      ["Animated Short"],
-        live_action_short:   ["Live Action Short"],
-        documentary:         ["Documentary Feature"],
-        documentary_short:   ["Documentary Short"],
-        international:       ["International Feature"],
-        cinematography:      ["Cinematography"],
-        film_editing:        ["Film Editing"],
-        costume:             ["Costume Design"],
-        production_design:   ["Production Design"],
-        makeup:              ["Makeup and Hairstyling"],
-        score:               ["Original Score"],
-        original_song:       ["Original Song"],
-        sound:               ["Best Sound"],
-        visual_effects:      ["Visual Effects"],
-        casting:             ["Casting"],
-      };
+      // Check each nominee directly — if their name appears near "wins" or "winner" or "best X" in the text
+      const WIN_WORDS = ["wins", "winner", "won", "awarded", "goes to", "award goes"];
 
       CATEGORIES.forEach(cat => {
-        const terms = SEARCH_TERMS[cat.id];
-        if (!terms) return;
-        const rawWinner = searchWiki(terms);
-        if (!rawWinner) return;
-        // Match against our exact nominee strings
-        const matched = cat.nominees.find(n => {
-          const nom = n.split(" — ")[0].replace(/^"/, "").replace(/"$/, "").toLowerCase();
-          const raw = rawWinner.toLowerCase();
-          return raw.includes(nom) || nom.includes(raw) || nom.split(" ").filter(w=>w.length>3).every(w=>raw.includes(w));
+        if (fresh.winners[cat.id]) return; // already have this one, skip
+        cat.nominees.forEach(nom => {
+          const nomName = nom.split(" — ")[0].replace(/^"/, "").replace(/"$/, "");
+          const nomLower = nomName.toLowerCase();
+          const textLower = text.toLowerCase();
+          const nomIdx = textLower.indexOf(nomLower);
+          if (nomIdx === -1) return;
+          // Check if a win word appears within 120 chars of the nominee name
+          const nearby = textLower.substring(Math.max(0, nomIdx - 120), nomIdx + 120);
+          const isWinner = WIN_WORDS.some(w => nearby.includes(w));
+          if (isWinner) {
+            if (fresh.winners[cat.id] !== nom) {
+              fresh.winners[cat.id] = nom;
+              newCount++;
+            }
+          }
         });
-        if (matched && fresh.winners[cat.id] !== matched) {
-          fresh.winners[cat.id] = matched;
-          newCount++;
-        }
       });
 
       await writeDB(fresh);
       setDb(fresh);
       setLastSync(new Date());
       setFetchStatus("done");
-      if (newCount > 0) showNotif("🏆 " + newCount + " new winner" + (newCount>1?"s":"") + " updated!");
-      else showNotif("✓ Checked — no new winners yet");
+      if (newCount > 0) {
+        showNotif("🏆 " + newCount + " new winner" + (newCount>1?"s":"") + " updated!");
+      } else {
+        showNotif("✓ Checked — no new winners detected");
+      }
     } catch(e) {
       console.error("Live fetch error:", e.message);
       setFetchStatus("error");
