@@ -496,6 +496,37 @@ function App() {
   const pot     = leaderboard.length * BUY_IN;
   const payouts = PAYOUT_SPLITS[0].splits.map(pct=>({pct,amount:pot*pct/100}));
 
+  // ── Tie-aware prize calculation ─────────────────────────────────
+  // If players tie across payout positions, pool those prizes and split equally
+  const calcPrizes = () => {
+    if (leaderboard.length === 0) return {};
+    const prizes = {}; // name -> amount
+    const SPLITS = PAYOUT_SPLITS[0].splits; // [60,30,10]
+    const payPositions = [0,1,2].filter(i => SPLITS[i] > 0);
+
+    let i = 0;
+    while (i < leaderboard.length) {
+      const score = leaderboard[i].score;
+      // Find all players tied at this score
+      let j = i;
+      while (j < leaderboard.length && leaderboard[j].score === score) j++;
+      const tiedPlayers = leaderboard.slice(i, j); // players at positions i..j-1
+
+      // Find which payout positions these tied players overlap
+      const overlappingPositions = payPositions.filter(pos => pos >= i && pos < j);
+
+      if (overlappingPositions.length > 0) {
+        // Pool all the prize money for these positions
+        const pooled = overlappingPositions.reduce((sum, pos) => sum + (pot * SPLITS[pos] / 100), 0);
+        const splitAmount = pooled / tiedPlayers.length;
+        tiedPlayers.forEach(p => { prizes[p.name] = splitAmount; });
+      }
+      i = j;
+    }
+    return prizes;
+  };
+  const prizeMap = calcPrizes();
+
   const iS = {background:"#08080e",border:"1px solid #22200e",color:"#E8E0D0",padding:"11px 14px",borderRadius:8,fontSize:14,outline:"none",fontFamily:"Georgia,serif"};
   const bG = {background:`linear-gradient(135deg,${G},#8a6010)`,border:"none",color:"#070400",padding:"12px 28px",borderRadius:8,cursor:"pointer",fontWeight:"bold",fontSize:14,fontFamily:"Georgia,serif",letterSpacing:0.5};
 
@@ -588,13 +619,20 @@ function App() {
                         <div style={{fontSize:10,color:"#3a2a10"}}>$30 buy-in · 60/30/10 split</div>
                       </div>
                       <div style={{display:"flex",gap:16}}>
-                        {["🥇","🥈","🥉"].map((m,i)=>(
-                          <div key={i} style={{textAlign:"center"}}>
-                            <div style={{fontSize:18}}>{m}</div>
-                            <div style={{fontSize:16,color:i===0?ACCENT:"#c8a840"}}>${payouts[i].amount.toFixed(0)}</div>
-                            <div style={{fontSize:9,color:"#3a2a10"}}>{PAYOUT_SPLITS[0].splits[i]}%</div>
-                          </div>
-                        ))}
+                        {["🥇","🥈","🥉"].map((m,i)=>{
+                          const pEntry = leaderboard[i];
+                          const tiedAtI = pEntry ? leaderboard.filter(e=>e.score===pEntry.score) : [];
+                          const splitAmt = tiedAtI.length > 1
+                            ? [0,1,2].filter(p=>tiedAtI.some((_,ti)=>ti+leaderboard.indexOf(pEntry)===p)).reduce((s,p)=>s+payouts[p].amount,0) / tiedAtI.length
+                            : payouts[i].amount;
+                          return (
+                            <div key={i} style={{textAlign:"center"}}>
+                              <div style={{fontSize:18}}>{m}</div>
+                              <div style={{fontSize:16,color:i===0?ACCENT:"#c8a840"}}>${payouts[i].amount.toFixed(0)}</div>
+                              <div style={{fontSize:9,color:"#3a2a10"}}>{PAYOUT_SPLITS[0].splits[i]}%</div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
@@ -717,13 +755,19 @@ function App() {
                 <div style={{fontSize:30,color:ACCENT}}>${pot}</div>
                 <div style={{fontSize:10,color:"#3a2a10"}}>{leaderboard.length} players × $30 · 60/30/10</div>
               </div>
-              {["🥇","🥈","🥉"].map((m,i)=>payouts[i].pct>0&&(
-                <div key={i} style={{textAlign:"center"}}>
-                  <div style={{fontSize:22}}>{m}</div>
-                  <div style={{fontSize:20,color:i===0?ACCENT:"#c8a840"}}>${payouts[i].amount.toFixed(0)}</div>
-                  <div style={{fontSize:10,color:"#3a2a10"}}>{payouts[i].pct}%</div>
-                </div>
-              ))}
+              {["🥇","🥈","🥉"].map((m,i)=>{
+                if (!payouts[i].pct) return null;
+                // Check if this position is part of a tie
+                const playersAtPos = leaderboard[i] ? leaderboard.filter(e=>e.score===leaderboard[i].score) : [];
+                const isTiedPos = playersAtPos.length > 1 && i < playersAtPos.length + (leaderboard.findIndex(e=>e.name===playersAtPos[0].name));
+                return (
+                  <div key={i} style={{textAlign:"center"}}>
+                    <div style={{fontSize:22}}>{m}</div>
+                    <div style={{fontSize:20,color:i===0?ACCENT:"#c8a840"}}>${payouts[i].amount.toFixed(0)}</div>
+                    <div style={{fontSize:10,color:"#3a2a10"}}>{payouts[i].pct}%</div>
+                  </div>
+                );
+              })}
             </div>
 
             {leaderboard.length===0 ? (
@@ -733,7 +777,8 @@ function App() {
                 {leaderboard.map((entry,i)=>{
                   const pct=maxPossible>0?Math.round((entry.score/maxPossible)*100):0;
                   const medals=["🥇","🥈","🥉"];
-                  const prize=i<3&&payouts[i]?.pct>0?payouts[i].amount:null;
+                  const prize = prizeMap[entry.name] || null;
+                  const isTied = prize !== null && leaderboard.filter(e => e.score === entry.score).length > 1;
                   return (
                     <div key={entry.name} style={{background:i===0?"linear-gradient(135deg,#100d00,#181200)":CARD,border:`1px solid ${i===0?"#C9A84C55":"#181408"}`,borderRadius:12,padding:"16px 22px",boxShadow:i===0?"0 0 28px #C9A84C14":"none",display:"flex",alignItems:"center",gap:16,transition:"all 0.3s"}}>
                       <div style={{fontSize:i<3?28:16,width:36,textAlign:"center"}}>{i<3?medals[i]:`#${i+1}`}</div>
