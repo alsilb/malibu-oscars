@@ -369,63 +369,95 @@ function App() {
   const fetchLiveWinners = useCallback(async () => {
     setFetchStatus("fetching");
     try {
-      const wikiRes = await fetch(
-        "https://en.wikipedia.org/w/api.php?action=query&titles=98th_Academy_Awards&prop=revisions&rvprop=content&rvslots=main&format=json&origin=*"
-      );
-      const wikiData = await wikiRes.json();
-      const pages = wikiData.query.pages;
-      const page = pages[Object.keys(pages)[0]];
-      const wikiText = (
-        page.revisions && page.revisions[0] &&
-        (page.revisions[0]["*"] ||
-        (page.revisions[0].slots && page.revisions[0].slots.main && page.revisions[0].slots.main["*"]))
-      ) || "";
+      // Fetch live results from a page that lists winners by category
+      const proxy = "https://api.allorigins.win/get?url=";
+      const targetUrl = encodeURIComponent("https://sundayguardianlive.com/entertainment-news/oscars-2026-full-winners-list-check-who-won-tonight-full-list-of-winners-from-the-98th-academy-awards-oscars-winners-2026-176717/");
+      const res = await fetch(proxy + targetUrl);
+      const data = await res.json();
+      const rawHtml = data.contents || "";
+      // Strip tags
+      const text = rawHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 
       const fresh = await readDB() || emptyDB();
       let newCount = 0;
 
-      if (wikiText.length > 100) {
-        // Split wiki into sections by headings and find bolded winner in each
-        const sectionRegex = /={2,3}([^=]+)={2,3}([\s\S]*?)(?==={2,3}|$)/g;
-        let sectionMatch;
-        while ((sectionMatch = sectionRegex.exec(wikiText)) !== null) {
-          const heading = sectionMatch[1].trim().toLowerCase();
-          const sectionText = sectionMatch[2];
+      // Strategy: find "And the winner is" or "And the Oscar goes to" 
+      // then look at the text immediately following for each category
+      // We search for each category name, then look for which nominee appears 
+      // right after "winner" markers in that vicinity
+      const CATEGORY_MARKERS = {
+        picture:             ["Best Picture"],
+        director:            ["Best Director", "Best Directing"],
+        actor:               ["Best Actor", "Actor in a Leading"],
+        actress:             ["Best Actress", "Actress in a Leading"],
+        supporting_actor:    ["Best Supporting Actor", "Actor in a Supporting"],
+        supporting_actress:  ["Best Supporting Actress", "Actress in a Supporting"],
+        adapted_screenplay:  ["Adapted Screenplay"],
+        original_screenplay: ["Original Screenplay"],
+        animated_feature:    ["Animated Feature Film", "Best Animated Feature"],
+        animated_short:      ["Animated Short Film", "Best Animated Short"],
+        live_action_short:   ["Live Action Short"],
+        documentary:         ["Documentary Feature Film", "Best Documentary Feature"],
+        documentary_short:   ["Documentary Short Film", "Best Documentary Short"],
+        international:       ["International Feature Film", "Best International"],
+        cinematography:      ["Cinematography"],
+        film_editing:        ["Film Editing", "Best Editing"],
+        costume:             ["Costume Design", "Best Costume"],
+        production_design:   ["Production Design", "Best Production"],
+        makeup:              ["Makeup and Hairstyling", "Best Makeup"],
+        score:               ["Original Score", "Best Score"],
+        original_song:       ["Original Song", "Best Song"],
+        sound:               ["Best Sound"],
+        visual_effects:      ["Visual Effects", "Best Visual"],
+        casting:             ["Best Casting", "Casting"],
+      };
 
-          // Match heading to a category
-          const cat = CATEGORIES.find(c => {
-            const cWords = c.name.toLowerCase()
-              .replace("writing ", "").replace("music ", "")
-              .split(" ").filter(w => w.length > 3);
-            return cWords.some(w => heading.includes(w));
-          });
-          if (!cat) continue;
+      // For each category, find the section of text near that category heading
+      // then check which nominee name appears closest after a "winner" signal
+      const WIN_SIGNALS = ["winner", "wins", "won", "oscar goes to", "award goes to", "and the oscar"];
 
-          // Find the bolded winner — triple apostrophes
-          const boldMatch = sectionText.match(/\'{3}([^']{2,80})\'{3}/);
-          if (!boldMatch) continue;
+      CATEGORIES.forEach(cat => {
+        if (fresh.winners[cat.id]) return; // skip already confirmed
+        const markers = CATEGORY_MARKERS[cat.id] || [];
+        
+        // Find the position of this category in the text
+        let catPos = -1;
+        for (const marker of markers) {
+          const pos = text.toLowerCase().indexOf(marker.toLowerCase());
+          if (pos !== -1) { catPos = pos; break; }
+        }
+        if (catPos === -1) return;
 
-          // Strip wiki link markup
-          let boldRaw = boldMatch[1]
-            .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2")
-            .replace(/\[\[([^\]]+)\]\]/g, "$1")
-            .replace(/[[\]{}]/g, "").trim();
+        // Look in a window of 600 chars around the category mention
+        const window = text.substring(catPos, catPos + 600).toLowerCase();
+        
+        // Check if there's a win signal in this window
+        const hasWinSignal = WIN_SIGNALS.some(s => window.includes(s));
+        if (!hasWinSignal) return;
 
-          // Match against our nominee list
-          const matched = cat.nominees.find(nom => {
-            const filmName = nom.split(" \u2014 ")[0].replace(/^"/, "").replace(/"$/, "").toLowerCase();
-            const personName = nom.includes(" \u2014 ") ? nom.split(" \u2014 ")[1].toLowerCase() : "";
-            const bold = boldRaw.toLowerCase();
-            return bold.includes(filmName) || filmName.includes(bold) ||
-                   (personName && (bold.includes(personName) || personName.includes(bold)));
-          });
-
-          if (matched && fresh.winners[cat.id] !== matched) {
-            fresh.winners[cat.id] = matched;
-            newCount++;
+        // Find which nominee appears in this window
+        // Require the nominee to appear AFTER a win signal for confidence
+        let winSignalPos = -1;
+        for (const signal of WIN_SIGNALS) {
+          const sp = window.indexOf(signal);
+          if (sp !== -1 && (winSignalPos === -1 || sp < winSignalPos)) {
+            winSignalPos = sp;
           }
         }
-      }
+
+        const postWin = window.substring(winSignalPos);
+
+        const matched = cat.nominees.find(nom => {
+          const filmName = nom.split(" \u2014 ")[0].replace(/^"/, "").replace(/"$/, "").toLowerCase();
+          if (filmName.length < 3) return false;
+          return postWin.includes(filmName);
+        });
+
+        if (matched) {
+          fresh.winners[cat.id] = matched;
+          newCount++;
+        }
+      });
 
       await writeDB(fresh);
       setDb(fresh);
@@ -707,32 +739,12 @@ function App() {
                 <div>
                   <h2 style={{color:ACCENT,fontSize:30,margin:0,letterSpacing:1,fontStyle:"italic"}}>Leaderboard</h2>
                   <p style={{color:"#4a3a20",margin:"3px 0 0",fontSize:12}}>
-                    {completedCats} of 24 announced · updates every 15s
+                    {completedCats} of 24 announced
                     {lastSync && <span> · last sync {lastSync.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>}
                   </p>
                 </div>
               </div>
-              {/* Live fetch toggle */}
-              <div style={{background:"linear-gradient(135deg,#0a0c0a,#101810)",border:`1px solid ${autoFetch?"#3a7a3a44":"#1e2a1e"}`,borderRadius:12,padding:"12px 18px",minWidth:240}}>
-                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:autoFetch?8:0}}>
-                  <div style={{fontSize:10,letterSpacing:2,color:autoFetch?"#5aaa5a":"#3a4a3a",textTransform:"uppercase"}}>
-                    {autoFetch?"🔴 AI Live Fetch ON":"⚪ AI Live Fetch"}
-                  </div>
-                  <div onClick={()=>setAutoFetch(v=>!v)} style={{width:42,height:24,borderRadius:12,background:autoFetch?"#2a5a2a":"#1a1a1a",border:`1px solid ${autoFetch?"#5aaa5a":"#3a3a3a"}`,cursor:"pointer",position:"relative",transition:"all 0.3s"}}>
-                    <div style={{position:"absolute",top:3,left:autoFetch?20:3,width:16,height:16,borderRadius:"50%",background:autoFetch?"#70d070":"#4a4a4a",transition:"all 0.3s"}}/>
-                  </div>
-                </div>
-                {autoFetch && (
-                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
-                    <span style={{fontSize:11,color:fetchStatus==="fetching"?"#a0d0a0":fetchStatus==="error"?"#d07070":"#4a6a4a"}}>
-                      {fetchStatus==="fetching"?"⟳ Searching web…":fetchStatus==="done"?"✓ Winners updated":fetchStatus==="error"?"⚠ Retry soon…":"Polls every 3 min"}
-                    </span>
-                    <button onClick={fetchLiveWinners} disabled={fetchStatus==="fetching"} style={{background:"#0e1e0e",border:"1px solid #2a5a2a",color:"#70d070",padding:"4px 10px",borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"Georgia,serif"}}>
-                      {fetchStatus==="fetching"?"…":"Fetch"}
-                    </button>
-                  </div>
-                )}
-              </div>
+
             </div>
 
             {/* Prize pool banner */}
@@ -838,7 +850,10 @@ function AdminWinners({ winners, onSave, syncing, completedCats, pot, paidCount,
       <div style={{display:"grid",gap:10}}>
         {CATEGORIES.map(cat=>(
           <div key={cat.id} style={{background:CARD,border:`1px solid ${localWinners[cat.id]?"#205010":"#181408"}`,borderRadius:10,padding:"13px 17px"}}>
-            <div style={{color:G,fontSize:10,letterSpacing:0.8,textTransform:"uppercase",marginBottom:9}}>{cat.name}</div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9}}>
+                        <div style={{color:G,fontSize:10,letterSpacing:0.8,textTransform:"uppercase"}}>{cat.name}</div>
+                        {localWinners[cat.id]&&<button onClick={()=>setLocalWinners(w=>({...w,[cat.id]:undefined}))} style={{background:"#1a0808",border:"1px solid #4a1010",color:"#d07070",padding:"2px 8px",borderRadius:4,cursor:"pointer",fontSize:10,fontFamily:"Georgia,serif"}}>✕ clear</button>}
+                      </div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               {cat.nominees.map(nom=>(
                 <button key={nom} onClick={()=>setLocalWinners(w=>({...w,[cat.id]:localWinners[cat.id]===nom?undefined:nom}))} style={{background:localWinners[cat.id]===nom?"#0a1e04":"#07070c",border:`1px solid ${localWinners[cat.id]===nom?"#50aa30":"#181408"}`,color:localWinners[cat.id]===nom?"#70d050":"#4a3a20",padding:"5px 11px",borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"Georgia,serif"}}>
