@@ -369,75 +369,62 @@ function App() {
   const fetchLiveWinners = useCallback(async () => {
     setFetchStatus("fetching");
     try {
-      // Use Wikipedia REST API - most reliable free source
       const wikiRes = await fetch(
         "https://en.wikipedia.org/w/api.php?action=query&titles=98th_Academy_Awards&prop=revisions&rvprop=content&rvslots=main&format=json&origin=*"
       );
       const wikiData = await wikiRes.json();
       const pages = wikiData.query.pages;
       const page = pages[Object.keys(pages)[0]];
-      const wikiText = (page.revisions && page.revisions[0] && (page.revisions[0]["*"] || (page.revisions[0].slots && page.revisions[0].slots.main && page.revisions[0].slots.main["*"]))) || "";
+      const wikiText = (
+        page.revisions && page.revisions[0] &&
+        (page.revisions[0]["*"] ||
+        (page.revisions[0].slots && page.revisions[0].slots.main && page.revisions[0].slots.main["*"]))
+      ) || "";
 
       const fresh = await readDB() || emptyDB();
       let newCount = 0;
 
       if (wikiText.length > 100) {
-        // Wikipedia marks the winner row with a gold/highlighted style or bold text
-        // The winner in each award section appears as bold (triple apostrophes: '''text''')
-        // We search for each nominee name in the wiki text
-        CATEGORIES.forEach(cat => {
-          cat.nominees.forEach(nom => {
-            const filmName = nom.split(" — ")[0].replace(/^"/, "").replace(/"$/, "");
-            // Check if this nominee appears bolded in the wiki (= winner)
-            const boldPattern = "'''";
-            let searchIdx = 0;
-            while (true) {
-              const boldStart = wikiText.indexOf(boldPattern, searchIdx);
-              if (boldStart === -1) break;
-              const boldEnd = wikiText.indexOf(boldPattern, boldStart + 3);
-              if (boldEnd === -1) break;
-              const boldText = wikiText.substring(boldStart + 3, boldEnd);
-              if (boldText.toLowerCase().includes(filmName.toLowerCase()) ||
-                  filmName.toLowerCase().includes(boldText.toLowerCase().trim())) {
-                // Make sure this bold text is near a category mention
-                const context = wikiText.substring(Math.max(0, boldStart - 300), boldStart + 100).toLowerCase();
-                const catWords = cat.name.toLowerCase().split(" ").filter(w => w.length > 3);
-                const nearCategory = catWords.some(w => context.includes(w));
-                if (nearCategory && fresh.winners[cat.id] !== nom) {
-                  fresh.winners[cat.id] = nom;
-                  newCount++;
-                }
-              }
-              searchIdx = boldEnd + 3;
-            }
-          });
-        });
-      }
+        // Split wiki into sections by headings and find bolded winner in each
+        const sectionRegex = /={2,3}([^=]+)={2,3}([\s\S]*?)(?==={2,3}|$)/g;
+        let sectionMatch;
+        while ((sectionMatch = sectionRegex.exec(wikiText)) !== null) {
+          const heading = sectionMatch[1].trim().toLowerCase();
+          const sectionText = sectionMatch[2];
 
-      // Also try allorigins with AP News as backup
-      if (newCount === 0) {
-        try {
-          const apRes = await fetch("https://api.allorigins.win/get?url=" + encodeURIComponent("https://apnews.com/article/oscars-winners-2026-academy-awards"));
-          const apData = await apRes.json();
-          const apText = (apData.contents || "").replace(/<[^>]+>/g, " ");
-          CATEGORIES.forEach(cat => {
-            if (fresh.winners[cat.id]) return;
-            cat.nominees.forEach(nom => {
-              const filmName = nom.split(" — ")[0].replace(/^"/, "").replace(/"$/, "").toLowerCase();
-              if (filmName.length < 3) return;
-              const apLower = apText.toLowerCase();
-              const filmIdx = apLower.indexOf(filmName);
-              if (filmIdx === -1) return;
-              const nearby = apLower.substring(Math.max(0, filmIdx - 150), filmIdx + 150);
-              if (nearby.includes("win") || nearby.includes("best") || nearby.includes("award")) {
-                if (fresh.winners[cat.id] !== nom) {
-                  fresh.winners[cat.id] = nom;
-                  newCount++;
-                }
-              }
-            });
+          // Match heading to a category
+          const cat = CATEGORIES.find(c => {
+            const cWords = c.name.toLowerCase()
+              .replace("writing ", "").replace("music ", "")
+              .split(" ").filter(w => w.length > 3);
+            return cWords.some(w => heading.includes(w));
           });
-        } catch(e2) { console.log("AP backup failed:", e2.message); }
+          if (!cat) continue;
+
+          // Find the bolded winner — triple apostrophes
+          const boldMatch = sectionText.match(/\'{3}([^']{2,80})\'{3}/);
+          if (!boldMatch) continue;
+
+          // Strip wiki link markup
+          let boldRaw = boldMatch[1]
+            .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2")
+            .replace(/\[\[([^\]]+)\]\]/g, "$1")
+            .replace(/[[\]{}]/g, "").trim();
+
+          // Match against our nominee list
+          const matched = cat.nominees.find(nom => {
+            const filmName = nom.split(" \u2014 ")[0].replace(/^"/, "").replace(/"$/, "").toLowerCase();
+            const personName = nom.includes(" \u2014 ") ? nom.split(" \u2014 ")[1].toLowerCase() : "";
+            const bold = boldRaw.toLowerCase();
+            return bold.includes(filmName) || filmName.includes(bold) ||
+                   (personName && (bold.includes(personName) || personName.includes(bold)));
+          });
+
+          if (matched && fresh.winners[cat.id] !== matched) {
+            fresh.winners[cat.id] = matched;
+            newCount++;
+          }
+        }
       }
 
       await writeDB(fresh);
@@ -843,7 +830,10 @@ function AdminWinners({ winners, onSave, syncing, completedCats, pot, paidCount,
           <div style={{color:"#4a3a20",fontSize:12,marginBottom:4}}>{completedCats} / 24 winners entered</div>
           <div style={{color:"#5a4a30",fontSize:12}}>💰 {paidCount} payments confirmed · Pot: <span style={{color:ACCENT}}>${pot}</span></div>
         </div>
-        <button onClick={()=>onSave(localWinners)} disabled={syncing} style={{...bG,opacity:syncing?0.6:1}}>{syncing?"Saving…":"Save All Winners ✓"}</button>
+        <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>{if(window.confirm("Clear ALL winners and start fresh?"))setLocalWinners({});}} style={{background:"#1a0808",border:"1px solid #4a1010",color:"#d07070",padding:"12px 18px",borderRadius:8,cursor:"pointer",fontSize:13,fontFamily:"Georgia,serif"}}>Clear All</button>
+                    <button onClick={()=>onSave(localWinners)} disabled={syncing} style={{...bG,opacity:syncing?0.6:1}}>{syncing?"Saving…":"Save All Winners ✓"}</button>
+                  </div>
       </div>
       <div style={{display:"grid",gap:10}}>
         {CATEGORIES.map(cat=>(
