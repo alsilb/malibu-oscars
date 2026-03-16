@@ -460,11 +460,21 @@ function App() {
   const savedBallots = db.ballots || {};
   const paidPlayers  = db.paid    || {};
   const maxPossible  = CATEGORIES.length;
-  const completedCats = Object.keys(winners).filter(k=>winners[k]).length;
+  const completedCats = Object.keys(winners).filter(k=>winners[k]&&(Array.isArray(winners[k])?winners[k].length>0:true)).length;
 
   const calcScore = (ballot) => {
     let score=0, correct=0;
-    CATEGORIES.forEach(cat=>{ if(winners[cat.id]&&ballot[cat.id]===winners[cat.id]){score++;correct++;} });
+    CATEGORIES.forEach(cat=>{
+      const w = winners[cat.id];
+      if (!w || !ballot[cat.id]) return;
+      const winArr = Array.isArray(w) ? w : [w];
+      if (winArr.includes(ballot[cat.id])) {
+        // Tied categories: each winner worth 1/n of a point so total stays 1
+        const points = 1 / winArr.length;
+        score += points;
+        correct++;
+      }
+    });
     return {score, correct};
   };
 
@@ -653,7 +663,7 @@ function App() {
             <div className="ballot-header" style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:28}}>
               <div>
                 <h2 style={{color:ACCENT,fontSize:28,margin:0,letterSpacing:1,fontStyle:"italic"}}>{playerName?`${playerName}'s Ballot`:"My Ballot"}</h2>
-                <p style={{color:"#4a3a20",margin:"5px 0 0",fontSize:12}}>{Object.keys(picks).length}/{CATEGORIES.length} picked{playerName&&completedCats>0&&` · ${calcScore(picks).score} pts`}</p>
+                <p style={{color:"#4a3a20",margin:"5px 0 0",fontSize:12}}>{Object.keys(picks).length}/{CATEGORIES.length} picked{playerName&&completedCats>0&&` · ${(s=>Number.isInteger(s)?s:s.toFixed(1))(calcScore(picks).score)} pts`}</p>
               </div>
               {playerName && <button onClick={saveBallot} disabled={syncing} style={{...bG,opacity:syncing?0.6:1}}>{syncing?"Saving…":"Save Ballot ✓"}</button>}
             </div>
@@ -661,13 +671,16 @@ function App() {
             <div style={{display:"grid",gap:12}}>
               {CATEGORIES.map(cat=>{
                 const winner=winners[cat.id]; const myPick=picks[cat.id];
-                const isCorrect=winner&&myPick===winner; const isWrong=winner&&myPick&&myPick!==winner;
+                const winArr = winner ? (Array.isArray(winner) ? winner : [winner]) : [];
+                const isCorrect=winner&&winArr.includes(myPick); const isWrong=winner&&myPick&&!winArr.includes(myPick);
                 return (
                   <div key={cat.id} style={{background:CARD,borderRadius:11,padding:"16px 20px",border:`1px solid ${isCorrect?"#2a5015":isWrong?"#4a1010":"#181408"}`,boxShadow:isCorrect?"0 0 14px #2a501522":"none"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:11,flexWrap:"wrap",gap:6}}>
                       <span style={{color:G,fontSize:11,fontWeight:"bold",letterSpacing:0.8,textTransform:"uppercase"}}>{cat.name}</span>
                       <div style={{display:"flex",gap:8}}>
-                        {winner&&<span style={{color:"#6a5a30",fontSize:11}}>Winner: <span style={{color:"#d4b050"}}>{winner.split(" — ")[0].replace(/^"/,"")}</span></span>}
+                        {winner&&<span style={{color:"#6a5a30",fontSize:11}}>Winner: <span style={{color:"#d4b050"}}>
+                          {(Array.isArray(winner)?winner:[winner]).map(w=>w.split(" — ")[0].replace(/^"/,"")).join(" & ")}
+                        </span></span>}
                         {isCorrect&&<span style={{color:"#50aa30",fontSize:11}}>✓ Correct</span>}
                         {isWrong&&<span style={{color:"#aa4030",fontSize:11}}>✗ Wrong</span>}
                         {myPick&&!winner&&<span style={{color:"#5a4a28",fontSize:11}}>Picked ✓</span>}
@@ -675,7 +688,7 @@ function App() {
                     </div>
                     <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                       {cat.nominees.map(nom=>{
-                        const isSel=myPick===nom; const isWin=winner===nom;
+                        const isSel=myPick===nom; const isWin=winner&&(Array.isArray(winner)?winner:[winner]).includes(nom);
                         return (
                           <button key={nom} onClick={()=>setPicks(p=>({...p,[cat.id]:nom}))} style={{background:isSel?(isCorrect?"#0e2206":isWrong?"#2a0606":"#100e00"):isWin&&!isSel?"#060e04":"#07070c",border:`${isSel?2:1}px solid ${isSel?(isCorrect?"#50aa30":isWrong?"#aa3030":G):isWin?"#2a5015":"#181408"}`,color:isSel?(isCorrect?"#80d050":isWrong?"#d05050":ACCENT):isWin?"#50aa30":"#5a4a30",padding:"6px 12px",borderRadius:6,cursor:"pointer",fontSize:12,fontFamily:"Georgia,serif",transition:"all 0.12s"}}>
                             {nom.length>50?nom.substring(0,50)+"…":nom}
@@ -750,7 +763,7 @@ function App() {
                         <div style={{fontSize:11,color:"#3a2a10",marginTop:3}}>{entry.correct} correct · {entry.filled}/{CATEGORIES.length} filled · {pct}%</div>
                       </div>
                       <div style={{textAlign:"right",minWidth:80}}>
-                        <div style={{fontSize:30,color:i===0?ACCENT:i===1?"#d4b050":"#b89030",lineHeight:1,fontWeight:"bold"}}>{entry.score}</div>
+                        <div style={{fontSize:30,color:i===0?ACCENT:i===1?"#d4b050":"#b89030",lineHeight:1,fontWeight:"bold"}}>{Number.isInteger(entry.score)?entry.score:entry.score.toFixed(1)}</div>
                         <div style={{fontSize:11,color:"#3a2a10"}}>/ {maxPossible} pts</div>
                         {prize!==null && <div style={{marginTop:6,background:"#0e0c00",border:`1px solid ${G}44`,borderRadius:6,padding:"3px 10px",fontSize:12,color:G,fontWeight:"bold"}}>${prize.toFixed(0)} 💰</div>}
                       </div>
@@ -812,12 +825,24 @@ function AdminWinners({ winners, onSave, syncing, completedCats, pot, paidCount,
         {CATEGORIES.map(cat=>(
           <div key={cat.id} style={{background:CARD,border:`1px solid ${localWinners[cat.id]?"#205010":"#181408"}`,borderRadius:10,padding:"13px 17px"}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9}}>
-                        <div style={{color:G,fontSize:10,letterSpacing:0.8,textTransform:"uppercase"}}>{cat.name}</div>
+                        <div style={{color:G,fontSize:10,letterSpacing:0.8,textTransform:"uppercase"}}>
+                          {cat.name}
+                          {localWinners[cat.id]&&Array.isArray(localWinners[cat.id])&&
+                            <span style={{color:"#5aaa5a",fontSize:9,marginLeft:8}}>TIE · 0.5 pts each</span>}
+                        </div>
                         {localWinners[cat.id]&&<button onClick={()=>setLocalWinners(w=>({...w,[cat.id]:undefined}))} style={{background:"#1a0808",border:"1px solid #4a1010",color:"#d07070",padding:"2px 8px",borderRadius:4,cursor:"pointer",fontSize:10,fontFamily:"Georgia,serif"}}>✕ clear</button>}
                       </div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               {cat.nominees.map(nom=>(
-                <button key={nom} onClick={()=>setLocalWinners(w=>({...w,[cat.id]:localWinners[cat.id]===nom?undefined:nom}))} style={{background:localWinners[cat.id]===nom?"#0a1e04":"#07070c",border:`1px solid ${localWinners[cat.id]===nom?"#50aa30":"#181408"}`,color:localWinners[cat.id]===nom?"#70d050":"#4a3a20",padding:"5px 11px",borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"Georgia,serif"}}>
+                <button key={nom} onClick={()=>setLocalWinners(w=>{
+                      const cur = w[cat.id];
+                      const arr = cur ? (Array.isArray(cur)?[...cur]:[cur]) : [];
+                      const idx = arr.indexOf(nom);
+                      if (idx === -1) arr.push(nom); else arr.splice(idx,1);
+                      return {...w, [cat.id]: arr.length===0?undefined : arr.length===1?arr[0]:arr};
+                    })} style={{background:(()=>{const w=localWinners[cat.id];return w&&(Array.isArray(w)?w.includes(nom):w===nom)?"#0a1e04":"#07070c"})(),
+                      border:`1px solid ${(()=>{const w=localWinners[cat.id];return w&&(Array.isArray(w)?w.includes(nom):w===nom)?"#50aa30":"#181408"})()}`,
+                      color:(()=>{const w=localWinners[cat.id];return w&&(Array.isArray(w)?w.includes(nom):w===nom)?"#70d050":"#4a3a20"})(),padding:"5px 11px",borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"Georgia,serif"}}>
                   {nom.length>52?nom.substring(0,52)+"…":nom}{localWinners[cat.id]===nom&&" ✓"}
                 </button>
               ))}
