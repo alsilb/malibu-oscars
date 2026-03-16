@@ -396,6 +396,7 @@ function App() {
         // Find which of our nominees' films appears in this sentence
         CATEGORIES.forEach(cat => {
           if (fresh.winners[cat.id]) return; // already have it
+          if (cat.id === "picture") return; // Best Picture is always last — enter manually
 
           const matched = cat.nominees.find(nom => {
             const filmName = nom.split(" \u2014 ")[0]
